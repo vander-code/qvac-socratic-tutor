@@ -39,6 +39,8 @@ Wait for the green "AI model ready" message, then type a topic and press **Start
 
 ## How it works
 
+It will not give you the answer until you figure it out through its questions
+
 - `server.js` loads the model with `loadModel`, then calls `completion` for each turn and streams the tokens to the browser.
 - `public/index.html` is the whole interface (plain HTML, CSS and JavaScript, no build step).
 - The tutor's behavior is a short `SYSTEM_PROMPT` in `server.js`. Edit the rules to change how it teaches.
