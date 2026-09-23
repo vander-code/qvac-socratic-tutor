@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Socratic Tutor</title>
+<style>
+  :root {
+    --bg: #eaf0f1; --ink: #12343b; --muted: #5b7378; --card: #ffffff;
+    --tutor: #fff6dc; --tutor-line: #e0a526; --me: #12343b; --line: #cfdcde;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 40px; }
+  h1 { font: 700 28px/1.2 Georgia, "Times New Roman", serif; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  #status { font-size: 14px; color: var(--muted); margin: 0 0 12px; }
+  #status.ok { color: #1c7a4a; } #status.err { color: #b3261e; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+          border-radius: 8px; color: var(--ink); background: #fff; }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--tutor-line); outline-offset: 2px; }
+  button { font: inherit; font-weight: 600; padding: 10px 16px; border: 0; border-radius: 8px;
+           background: var(--me); color: #fff; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .chips button { padding: 6px 12px; font-weight: 500; }
+  #chat { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }
+  .msg { padding: 12px 14px; border-radius: 10px; max-width: 88%; white-space: pre-wrap; }
+  .tutor { background: var(--tutor); border-left: 4px solid var(--tutor-line);
+           font: 18px/1.5 Georgia, "Times New Roman", serif; }
+  .me { background: var(--me); color: #fff; align-self: flex-end; }
+  .topic { font-weight: 600; margin: 16px 0 0; }
+  .hidden { display: none; }
+  .actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; }
+  @media (prefers-reduced-motion: no-preference) { .msg { transition: opacity .2s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Socratic Tutor</h1>
+  <p class="sub">Pick a topic. I won't give you answers. I'll ask questions until you find them yourself.</p>
+
+  <p id="status">Checking the AI model...</p>
+
+  <section id="setup" class="card">
+    <label for="topic"><strong>What do you want to learn?</strong></label>
+    <div class="row" style="margin-top:8px">
+      <input id="topic" placeholder="For example: photosynthesis" autocomplete="off">
+      <button id="start" disabled>Start</button>
+    </div>
+    <div class="chips" id="chips">
+      <button class="ghost">Photosynthesis</button>
+      <button class="ghost">Gravity</button>
+      <button class="ghost">Fractions</button>
+    </div>
+  </section>
+
+  <section id="lesson" class="hidden">
+    <p class="topic" id="topicLabel"></p>
+    <div id="chat" aria-live="polite"></div>
+    <div class="row">
+      <input id="answer" placeholder="Type your answer..." autocomplete="off">
+      <button id="send">Send</button>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="hint">I'm stuck, give me a hint</button>
+      <button class="ghost" id="reset">New topic</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let messages = [];   // the whole conversation, sent to the server each turn
+let busy = false;
+
+// ---- Wait until the AI model is loaded ----
+async function checkStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    if (s.error) { setStatus("Model error: " + s.error, "err"); return; }
+    if (s.ready) { setStatus("AI model ready. Running on your device.", "ok"); $("start").disabled = false; return; }
+    setStatus(s.message + (s.percent != null ? " " + s.percent + "%" : ""));
+  } catch { setStatus("Can't reach the server. Is it running?", "err"); }
+  setTimeout(checkStatus, 1000);
+}
+function setStatus(text, cls = "") { $("status").textContent = text; $("status").className = cls; }
+
+// ---- Chat helpers ----
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + (role === "assistant" ? "tutor" : "me");
+  div.textContent = text;
+  $("chat").appendChild(div);
+  div.scrollIntoView({ block: "end" });
+  return div;
+}
+
+async function askTutor() {
+  busy = true; setControls();
+  const bubble = addMsg("assistant", "...");
+  let reply = "";
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      reply += decoder.decode(value, { stream: true });
+      bubble.textContent = reply;
+      bubble.scrollIntoView({ block: "end" });
+    }
+    messages.push({ role: "assistant", content: reply.trim() });
+  } catch {
+    bubble.textContent = "Something went wrong. Try sending again.";
+    messages.pop(); // remove the last student message so they can retry
+  }
+  busy = false; setControls(); $("answer").focus();
+}
+
+function setControls() {
+  $("send").disabled = $("hint").disabled = $("answer").disabled = busy;
+}
+
+// ---- Buttons ----
+function startLesson(topic) {
+  if (!topic.trim()) return;
+  messages = [{ role: "user", content: `I want to learn about: ${topic.trim()}. Ask me your first easy question.` }];
+  $("setup").classList.add("hidden");
+  $("lesson").classList.remove("hidden");
+  $("topicLabel").textContent = "Topic: " + topic.trim();
+  $("chat").innerHTML = "";
+  askTutor();
+}
+
+function sendAnswer(text, shown) {
+  if (busy || !text.trim()) return;
+  messages.push({ role: "user", content: text.trim() });
+  addMsg("user", shown || text.trim());
+  $("answer").value = "";
+  askTutor();
+}
+
+$("start").onclick = () => startLesson($("topic").value);
+$("topic").onkeydown = (e) => { if (e.key === "Enter" && !$("start").disabled) startLesson($("topic").value); };
+$("chips").onclick = (e) => { if (e.target.tagName === "BUTTON" && !$("start").disabled) startLesson(e.target.textContent); };
+$("send").onclick = () => sendAnswer($("answer").value);
+$("answer").onkeydown = (e) => { if (e.key === "Enter") sendAnswer($("answer").value); };
+$("hint").onclick = () => sendAnswer("I'm stuck. Ask me an easier question that gives a small hint.", "I'm stuck. A hint, please.");
+$("reset").onclick = () => {
+  messages = []; $("lesson").classList.add("hidden"); $("setup").classList.remove("hidden");
+  $("topic").value = ""; $("topic").focus();
+};
+
+checkStatus();
+</script>
+</body>
+</html>
